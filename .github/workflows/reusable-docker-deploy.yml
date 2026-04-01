@@ -1,0 +1,149 @@
+name: Reusable Docker Build & Deploy
+
+# Reads deploy.config.json from the calling repo:
+#
+#   Single image (Dockerfile at repo root):
+#     {"image": "landing", "chart": "charts/landing"}
+#
+#   Single image with target:
+#     {"image": "robotmind-app", "chart": "charts/robotmind-app", "target": "runner"}
+#
+#   Multiple images (Dockerfiles at docker/{name}/Dockerfile):
+#     {"images": ["provisioning", "widget-gateway", "directus"], "chart": "charts/cikut-identity"}
+#
+#   Multiple images with overrides:
+#     {"images": [
+#       "provisioning",
+#       {"name": "widget-gateway", "dockerfile": "docker/widget/Dockerfile"}
+#     ], "chart": "charts/cikut-identity"}
+#
+#   Custom values-images.yaml key mapping (default: image name as key):
+#     {"images": ["provisioning"], "chart": "charts/cikut-identity",
+#      "values-keys": {"provisioning": "provisioning.image.tag"}}
+
+on:
+  workflow_call: {}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Set image tag
+        run: echo "TAG=$(git rev-parse --short=8 HEAD)" >> $GITHUB_ENV
+
+      - name: Read deploy config
+        id: config
+        run: |
+          if [[ ! -f deploy.config.json ]]; then
+            echo "::error::deploy.config.json not found in repo root"
+            exit 1
+          fi
+          echo "config=$(cat deploy.config.json | jq -c '.')" >> $GITHUB_OUTPUT
+
+      - name: Build and push images
+        run: |
+          config='${{ steps.config.outputs.config }}'
+          registry="ghcr.io/${{ github.repository_owner }}"
+          tag="${{ env.TAG }}"
+
+          # Normalize to array of {name, dockerfile, target}
+          images=$(echo "$config" | jq -c '
+            if .image then
+              # Single image
+              [{
+                name: .image,
+                dockerfile: (.dockerfile // "Dockerfile"),
+                target: (.target // null)
+              }]
+            else
+              # Multiple images
+              [.images[] |
+                if type == "string" then
+                  {name: ., dockerfile: ("docker/" + . + "/Dockerfile"), target: null}
+                else
+                  {name: .name, dockerfile: (.dockerfile // ("docker/" + .name + "/Dockerfile")), target: (.target // null)}
+                end
+              ]
+            end
+          ')
+
+          echo "$images" | jq -c '.[]' | while read -r img; do
+            name=$(echo "$img" | jq -r '.name')
+            dockerfile=$(echo "$img" | jq -r '.dockerfile')
+            target=$(echo "$img" | jq -r '.target // empty')
+
+            echo "::group::Building $name"
+            docker buildx build \
+              --push \
+              --tag "$registry/$name:$tag" \
+              --tag "$registry/$name:latest" \
+              --cache-from "type=gha,scope=$name" \
+              --cache-to "type=gha,mode=max,scope=$name" \
+              ${target:+--target "$target"} \
+              -f "$dockerfile" .
+            echo "::endgroup::"
+          done
+
+      - name: Generate values-images.yaml
+        run: |
+          config='${{ steps.config.outputs.config }}'
+          chart_path=$(echo "$config" | jq -r '.chart')
+          tag="${{ env.TAG }}"
+
+          # Get image names
+          names=$(echo "$config" | jq -r '
+            if .image then [.image]
+            else [.images[] | if type == "string" then . else .name end]
+            end | .[]
+          ')
+
+          # Get custom key mappings if any
+          values_keys=$(echo "$config" | jq -c '.["values-keys"] // {}')
+
+          {
+            echo "# Auto-updated by CI — do not edit manually"
+            for name in $names; do
+              custom_key=$(echo "$values_keys" | jq -r --arg n "$name" '.[$n] // empty')
+              if [[ -n "$custom_key" ]]; then
+                # Custom dotpath like "provisioning.image.tag"
+                # Convert to nested YAML
+                IFS='.' read -ra parts <<< "$custom_key"
+                indent=""
+                for ((i=0; i<${#parts[@]}-1; i++)); do
+                  echo "${indent}${parts[$i]}:"
+                  indent="$indent  "
+                done
+                echo "${indent}${parts[-1]}: \"$tag\""
+              else
+                echo "${name}:"
+                echo "  image:"
+                echo "    tag: \"$tag\""
+              fi
+            done
+          } > "$chart_path/values-images.yaml"
+
+          echo "--- $chart_path/values-images.yaml ---"
+          cat "$chart_path/values-images.yaml"
+
+      - name: Commit and push image tags
+        run: |
+          chart_path=$(echo '${{ steps.config.outputs.config }}' | jq -r '.chart')
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$chart_path/values-images.yaml"
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore: update image tags to ${{ env.TAG }} [skip ci]"
+          git push
