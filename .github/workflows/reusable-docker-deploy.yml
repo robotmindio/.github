@@ -90,6 +90,7 @@ jobs:
               --push \
               --tag "$registry/$name:$tag" \
               --tag "$registry/$name:latest" \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
               --cache-from "type=gha,scope=$name" \
               --cache-to "type=gha,mode=max,scope=$name" \
               ${target:+--target "$target"} \
