@@ -22,7 +22,7 @@ name: Reusable Docker Build & Deploy
 #      "values-keys": {"provisioning": "provisioning.image.tag"}}
 
 on:
-  workflow_call: {}
+  workflow_call:
 
 jobs:
   build-and-deploy:
