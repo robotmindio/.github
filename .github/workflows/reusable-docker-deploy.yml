@@ -75,10 +75,12 @@ jobs:
         if: fromJSON(steps.config.outputs.config).context.extra-repos != null
         run: |
           config='${{ steps.config.outputs.config }}'
+          # Use DEPLOY_TOKEN (org secret) for cross-repo access, fall back to GITHUB_TOKEN
+          TOKEN="${{ secrets.DEPLOY_TOKEN || secrets.GITHUB_TOKEN }}"
           echo "$config" | jq -r '.context["extra-repos"][]' | while read -r repo; do
             echo "Checking out $repo..."
             git clone --depth 1 \
-              "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository_owner }}/$repo.git" \
+              "https://x-access-token:${TOKEN}@github.com/${{ github.repository_owner }}/$repo.git" \
               "workspace/$repo"
           done
 
