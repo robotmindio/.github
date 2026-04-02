@@ -31,6 +31,10 @@ name: Reusable Docker Build & Deploy
 
 on:
   workflow_call:
+    secrets:
+      DEPLOY_TOKEN:
+        description: "PAT with repo scope for cross-repo checkout"
+        required: false
 
 jobs:
   build-and-deploy:
@@ -76,7 +80,7 @@ jobs:
         run: |
           config='${{ steps.config.outputs.config }}'
           # Use DEPLOY_TOKEN (org secret) for cross-repo access, fall back to GITHUB_TOKEN
-          TOKEN="${{ secrets.DEPLOY_TOKEN || secrets.GITHUB_TOKEN }}"
+          TOKEN="${{ secrets.DEPLOY_TOKEN != '' && secrets.DEPLOY_TOKEN || github.token }}"
           echo "$config" | jq -r '.context["extra-repos"][]' | while read -r repo; do
             echo "Checking out $repo..."
             git clone --depth 1 \
