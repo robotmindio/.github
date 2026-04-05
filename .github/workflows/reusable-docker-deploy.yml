@@ -141,6 +141,7 @@ jobs:
             echo "::group::Building $name"
             docker buildx build \
               --push \
+              --provenance=false \
               --tag "$registry/$name:$tag" \
               --tag "$registry/$name:latest" \
               --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
