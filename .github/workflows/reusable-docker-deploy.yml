@@ -32,8 +32,11 @@ name: Reusable Docker Build & Deploy
 on:
   workflow_call:
     secrets:
-      DEPLOY_TOKEN:
-        description: "PAT with repo scope for cross-repo checkout"
+      ROBOTMIND_APP_ID:
+        description: "GitHub App ID for cross-repo checkout"
+        required: false
+      ROBOTMIND_APP_PRIVATE_KEY:
+        description: "GitHub App private key for cross-repo checkout"
         required: false
 
 jobs:
@@ -75,12 +78,20 @@ jobs:
             echo "REPO_DIR=workspace" >> $GITHUB_ENV
           fi
 
+      - name: Generate GitHub App token for extra repos
+        id: app-token
+        if: fromJSON(steps.config.outputs.config).context.extra-repos != null
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ROBOTMIND_APP_ID }}
+          private-key: ${{ secrets.ROBOTMIND_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
       - name: Checkout extra repos
         if: fromJSON(steps.config.outputs.config).context.extra-repos != null
         run: |
           config='${{ steps.config.outputs.config }}'
-          # Use DEPLOY_TOKEN (org secret) for cross-repo access, fall back to GITHUB_TOKEN
-          TOKEN="${{ secrets.DEPLOY_TOKEN != '' && secrets.DEPLOY_TOKEN || github.token }}"
+          TOKEN="${{ steps.app-token.outputs.token || github.token }}"
           echo "$config" | jq -r '.context["extra-repos"][]' | while read -r repo; do
             echo "Checking out $repo..."
             git clone --depth 1 \
@@ -141,7 +152,6 @@ jobs:
             echo "::group::Building $name"
             docker buildx build \
               --push \
-              --provenance=false \
               --tag "$registry/$name:$tag" \
               --tag "$registry/$name:latest" \
               --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
@@ -198,4 +208,16 @@ jobs:
           git add "$chart_path/values-images.yaml"
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "chore: update image tags to ${{ env.TAG }} [skip ci]"
-          git push
+
+          # Retry push with rebase to handle concurrent CI runs
+          MAX_RETRIES=3
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            if git push; then
+              echo "Push succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "::warning::Push failed (attempt $attempt/$MAX_RETRIES), rebasing and retrying..."
+            git pull --rebase
+          done
+          echo "::error::Failed to push image tags after $MAX_RETRIES attempts"
+          exit 1
