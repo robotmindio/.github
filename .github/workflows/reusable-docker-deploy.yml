@@ -144,23 +144,55 @@ jobs:
             prefix=""
           fi
 
-          echo "$images" | jq -c '.[]' | while read -r img; do
+          # Build all images in parallel
+          mapfile -t img_configs < <(echo "$images" | jq -c '.[]')
+          pids=()
+          logdir=$(mktemp -d)
+
+          for img in "${img_configs[@]}"; do
             name=$(echo "$img" | jq -r '.name')
             dockerfile=$(echo "$img" | jq -r '.dockerfile')
             target=$(echo "$img" | jq -r '.target // empty')
 
-            echo "::group::Building $name"
-            docker buildx build \
-              --push \
-              --tag "$registry/$name:$tag" \
-              --tag "$registry/$name:latest" \
-              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-              --cache-from "type=gha,scope=$name" \
-              --cache-to "type=gha,mode=max,scope=$name" \
-              ${target:+--target "$target"} \
-              -f "$BUILD_CONTEXT/${prefix}${dockerfile}" "$BUILD_CONTEXT"
+            (
+              set -o pipefail
+              echo "[$name] Starting build..."
+              docker buildx build \
+                --push \
+                --tag "$registry/$name:$tag" \
+                --tag "$registry/$name:latest" \
+                --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+                --cache-from "type=gha,scope=$name" \
+                --cache-to "type=gha,mode=max,scope=$name" \
+                ${target:+--target "$target"} \
+                -f "$BUILD_CONTEXT/${prefix}${dockerfile}" "$BUILD_CONTEXT" \
+                > "$logdir/$name.log" 2>&1
+              echo "[$name] Build complete"
+            ) &
+            pids+=($!)
+          done
+
+          # Wait for all builds and collect failures
+          failed=()
+          for i in "${!pids[@]}"; do
+            if ! wait "${pids[$i]}"; then
+              name=$(echo "${img_configs[$i]}" | jq -r '.name')
+              failed+=("$name")
+            fi
+          done
+
+          # Print logs for all images
+          for img in "${img_configs[@]}"; do
+            name=$(echo "$img" | jq -r '.name')
+            echo "::group::Build log: $name"
+            cat "$logdir/$name.log" 2>/dev/null || echo "No log available"
             echo "::endgroup::"
           done
+
+          if [[ ${#failed[@]} -gt 0 ]]; then
+            echo "::error::Failed to build: ${failed[*]}"
+            exit 1
+          fi
 
       - name: Generate values-images.yaml
         run: |
