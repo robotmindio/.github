@@ -45,6 +45,11 @@ jobs:
     permissions:
       contents: write
       packages: write
+    env:
+      # Route builds through the dedicated BuildKit pod (IPv6 disabled).
+      # Without this, the fallback docker-container driver creates a builder
+      # inside DinD that tries IPv6 and fails on our IPv4-only k3s cluster.
+      BUILDX_BUILDER_URL: ${{ vars.BUILDX_BUILDER_URL }}
     steps:
       - uses: actions/checkout@v4
         with:
