@@ -254,22 +254,47 @@ jobs:
       - name: Commit and push image tags
         run: |
           chart_path=$(echo '${{ steps.config.outputs.config }}' | jq -r '.chart')
+
+          # Capture the generated values-images.yaml content from the previous
+          # step so we can re-apply it on top of fresh origin/main on every
+          # retry. This turns races against concurrent image-tag commits into
+          # a clean overwrite instead of a content-conflict rebase: two runs
+          # writing different tag strings to the same line cannot be
+          # auto-merged, so `git pull --rebase` would give up on every retry.
+          values_content=$(cat "$REPO_DIR/$chart_path/values-images.yaml")
+
           cd "$REPO_DIR"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$chart_path/values-images.yaml"
-          git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "chore: update image tags to ${{ env.TAG }} [skip ci]"
 
-          # Retry push with rebase to handle concurrent CI runs
-          MAX_RETRIES=3
+          MAX_RETRIES=5
           for attempt in $(seq 1 $MAX_RETRIES); do
-            if git push; then
+            # Sync to latest remote main so the commit is a clean fast-forward.
+            # Safe: the Docker image is already pushed to GHCR, and the only
+            # thing we still need to land on main is the values-images.yaml
+            # update — there is no working-tree state worth preserving here.
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Rewrite values-images.yaml from the captured content, overwriting
+            # whatever tag origin/main currently holds for our chart keys.
+            printf '%s\n' "$values_content" > "$chart_path/values-images.yaml"
+
+            git add "$chart_path/values-images.yaml"
+            if git diff --cached --quiet; then
+              echo "No changes to commit (origin/main already has tag ${{ env.TAG }})"
+              exit 0
+            fi
+
+            git commit -m "chore: update image tags to ${{ env.TAG }} [skip ci]"
+
+            if git push origin HEAD:main; then
               echo "Push succeeded on attempt $attempt"
               exit 0
             fi
-            echo "::warning::Push failed (attempt $attempt/$MAX_RETRIES), rebasing and retrying..."
-            git pull --rebase
+
+            echo "::warning::Push failed (attempt $attempt/$MAX_RETRIES), resyncing to latest main and retrying..."
           done
+
           echo "::error::Failed to push image tags after $MAX_RETRIES attempts"
           exit 1
