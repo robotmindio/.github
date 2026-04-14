@@ -89,8 +89,8 @@ jobs:
       # to a package linked to the robotmind monorepo).
       - name: Generate GitHub App token
         id: app-token
-        if: secrets.ROBOTMIND_APP_ID != ''
         uses: actions/create-github-app-token@v2
+        continue-on-error: true
         with:
           app-id: ${{ secrets.ROBOTMIND_APP_ID }}
           private-key: ${{ secrets.ROBOTMIND_APP_PRIVATE_KEY }}
