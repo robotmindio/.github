@@ -33,10 +33,10 @@ on:
   workflow_call:
     secrets:
       ROBOTMIND_APP_ID:
-        description: "GitHub App ID for cross-repo checkout"
+        description: "GitHub App ID for cross-repo checkout and GHCR push"
         required: false
       ROBOTMIND_APP_PRIVATE_KEY:
-        description: "GitHub App private key for cross-repo checkout"
+        description: "GitHub App private key for cross-repo checkout and GHCR push"
         required: false
 
 jobs:
@@ -83,9 +83,13 @@ jobs:
             echo "REPO_DIR=workspace" >> $GITHUB_ENV
           fi
 
-      - name: Generate GitHub App token for extra repos
+      # Generate a GitHub App token for org-wide GHCR push access.
+      # GITHUB_TOKEN is scoped to the calling repo and can't push to
+      # packages linked to other repos (e.g. openclaw-deploy pushing
+      # to a package linked to the robotmind monorepo).
+      - name: Generate GitHub App token
         id: app-token
-        if: fromJSON(steps.config.outputs.config).context.extra-repos != null
+        if: secrets.ROBOTMIND_APP_ID != ''
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ secrets.ROBOTMIND_APP_ID }}
@@ -108,7 +112,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
       - name: Set up Buildx (remote builder)
         uses: docker/setup-buildx-action@v3
