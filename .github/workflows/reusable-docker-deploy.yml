@@ -175,22 +175,31 @@ jobs:
             (
               set -o pipefail
               echo "[$name] Starting build..."
-              # Remote BuildKit builder has persistent cache — no cache flags needed.
-              # Fall back to GHA cache for GitHub-hosted runners.
-              cache_args=""
-              if [[ -z "${BUILDX_BUILDER_URL:-}" ]]; then
-                cache_args="--cache-from type=gha,scope=$name --cache-to type=gha,mode=max,scope=$name"
-              fi
 
-              docker buildx build \
-                --push \
-                --tag "$registry/$name:$tag" \
-                --tag "$registry/$name:latest" \
-                --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-                $cache_args \
-                ${target:+--target "$target"} \
-                -f "$BUILD_CONTEXT/${prefix}${dockerfile}" "$BUILD_CONTEXT" \
-                > "$logdir/$name.log" 2>&1
+              if [[ -n "${BUILDX_BUILDER_URL:-}" ]]; then
+                # Remote BuildKit builder has persistent cache and its own auth.
+                docker buildx build \
+                  --push \
+                  --tag "$registry/$name:$tag" \
+                  --tag "$registry/$name:latest" \
+                  --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+                  ${target:+--target "$target"} \
+                  -f "$BUILD_CONTEXT/${prefix}${dockerfile}" "$BUILD_CONTEXT" \
+                  > "$logdir/$name.log" 2>&1
+              else
+                # No remote builder — use docker build + push directly.
+                # The docker-container buildx driver doesn't inherit docker
+                # login credentials in DinD environments (ARC runners).
+                docker build \
+                  --tag "$registry/$name:$tag" \
+                  --tag "$registry/$name:latest" \
+                  --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+                  ${target:+--target "$target"} \
+                  -f "$BUILD_CONTEXT/${prefix}${dockerfile}" "$BUILD_CONTEXT" \
+                  > "$logdir/$name.log" 2>&1
+                docker push "$registry/$name:$tag" >> "$logdir/$name.log" 2>&1
+                docker push "$registry/$name:latest" >> "$logdir/$name.log" 2>&1
+              fi
               echo "[$name] Build complete"
             ) &
             pids+=($!)
